@@ -30,6 +30,18 @@ async def resolve_speaker_names(guild, speaker_ids, names):
             names[speaker_id] = member.display_name
 
 
+async def send_transcript(send, path, count, **options):
+    message = (
+        f"めでたしや〜！文字起こしをバッチリPCに保存したよ〜（全部で{count}件！）。"
+        "これで大事なことも忘れずにすむね〜。"
+    )
+    attachment = discord.File(path)
+    try:
+        await send(message, file=attachment, **options)
+    finally:
+        attachment.close()
+
+
 @dataclass
 class Recording:
     voice: VoiceClient
@@ -37,6 +49,7 @@ class Recording:
     scratch: tempfile.TemporaryDirectory
     channel_id: int
     owner_id: int
+    started_at: datetime
     path: Path
     stopping: bool = False
 
@@ -51,13 +64,14 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
     inference_lock = asyncio.Lock()
 
     def transcribe(recording):
-        from faster_whisper import WhisperModel
-
         nonlocal model
-        if model is None:
+        if recording.sink.clips and model is None:
+            from faster_whisper import WhisperModel
+
             model = WhisperModel(model_name, device="cpu", compute_type="int8")
         return save_transcript(
-            model, recording.sink.clips, recording.sink.speaker_names, language, recording.path
+            model, recording.sink.clips, recording.sink.speaker_names, language, recording.path,
+            started_at=recording.started_at,
         )
 
     async def finish(guild_id, recording):
@@ -73,7 +87,7 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
                     log.exception("Voice disconnect failed in guild %s", guild_id)
 
             if not recording.sink.clips:
-                return save_transcript(None, [], {}, language, recording.path)
+                return transcribe(recording)
             guild = bot.get_guild(guild_id)
             if guild is not None:
                 await resolve_speaker_names(
@@ -117,12 +131,13 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
                 "終わるときは /recap_stop って呼んでね〜！",
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-            stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            started_at = datetime.now().astimezone()
+            stamp = started_at.strftime("%Y-%m-%d_%H%M%S")
             path = ROOT / "transcripts" / f"{stamp}_{guild_id}_{uuid4().hex[:8]}.md"
             sink = RecordingSink(Path(scratch.name))
             voice.start_recording(sink)
             sessions[guild_id] = Recording(
-                voice, sink, scratch, channel.id, ctx.author.id, path
+                voice, sink, scratch, channel.id, ctx.author.id, started_at, path
             )
         except Exception:
             log.exception("Could not start recording in guild %s", guild_id)
@@ -143,7 +158,7 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
         finally:
             connecting.discard(guild_id)
 
-    @bot.slash_command(description="録音を止めて文字起こしをローカルに保存", contexts={discord.InteractionContextType.guild})
+    @bot.slash_command(description="録音を止めて文字起こしファイルを受け取る", contexts={discord.InteractionContextType.guild})
     async def recap_stop(ctx: discord.ApplicationContext):
         guild_id = ctx.guild_id
         recording = sessions.get(guild_id)
@@ -166,18 +181,23 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
                 count = await finish(guild_id, recording)
             except Exception:
                 log.exception("文字起こしに失敗しました")
-                message = "文字起こしに失敗しました。Botの起動ログを確認してください。"
+                try:
+                    await ctx.followup.send(
+                        "文字起こしに失敗しました。Botの起動ログを確認してください。",
+                        ephemeral=True,
+                    )
+                except discord.HTTPException:
+                    pass
             else:
                 log.info("Saved %s (%s segments)", recording.path, count)
-                message = (
-                    f"めでたしや〜！文字起こしをバッチリPCに保存したよ〜（全部で{count}件！）。"
-                    "これで大事なことも忘れずにすむね〜。\n"
-                    f"`{recording.path.name}`"
-                )
-            try:
-                await ctx.followup.send(message, ephemeral=True)
-            except discord.HTTPException:
-                pass  # Long transcriptions can outlive Discord's interaction token.
+                try:
+                    await send_transcript(ctx.followup.send, recording.path, count, ephemeral=True)
+                except discord.HTTPException:
+                    # Long transcriptions can outlive the interaction token.
+                    try:
+                        await send_transcript(ctx.author.send, recording.path, count)
+                    except discord.HTTPException:
+                        log.warning("Discord could not deliver transcript %s", recording.path, exc_info=True)
 
     @bot.event
     async def on_voice_state_update(member, before, after):
@@ -193,6 +213,12 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
             log.info("Saved %s (%s segments) after leaving the voice channel", recording.path, count)
         except Exception:
             log.exception("文字起こしに失敗しました")
+        else:
+            try:
+                owner = bot.get_user(recording.owner_id) or await bot.fetch_user(recording.owner_id)
+                await send_transcript(owner.send, recording.path, count)
+            except discord.HTTPException:
+                log.warning("Discord could not deliver transcript %s", recording.path, exc_info=True)
 
     return bot
 

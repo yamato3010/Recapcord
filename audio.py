@@ -85,7 +85,7 @@ def markdown_text(text: str) -> str:
     return re.sub(r'([\\`*_{}\[\]<>|~])', r'\\\1', " ".join(text.split()))
 
 
-def save_transcript(model, clips, speaker_names, language, destination):
+def save_transcript(model, clips, speaker_names, language, destination, *, started_at):
     rows = []
     for clip in clips:
         speaker = speaker_names.get(clip.speaker_id, f"ユーザー {clip.speaker_id}")
@@ -96,7 +96,12 @@ def save_transcript(model, clips, speaker_names, language, destination):
             if text := markdown_text(segment.text):
                 rows.append((clip.start + segment.start, speaker, text))
 
-    lines = ["# トランスクリプト", ""]
+    lines = [
+        "# トランスクリプト",
+        "",
+        f"録音開始日時: {started_at.isoformat(sep=' ', timespec='seconds')}",
+        "",
+    ]
     for start, speaker, text in sorted(rows):
         lines.append(f"- `{timestamp(start)}` **{markdown_text(speaker)}** — {text}")
     if not rows:
