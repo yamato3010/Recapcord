@@ -1,7 +1,9 @@
 import asyncio
+import json
 import logging
 import os
-import tempfile
+import re
+import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -11,12 +13,13 @@ import discord
 from discord.voice import VoiceClient
 from dotenv import load_dotenv
 
-from audio import RecordingSink, save_transcript
+from audio import AudioClip, RecordingSink, save_transcript
 from yachiyo_lines import yachiyo_line
 
 
 log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent
+RECORDING_ID = re.compile(r"\d{4}-\d{2}-\d{2}_\d{6}_\d+_[0-9a-f]{8}", re.ASCII)
 
 
 async def resolve_speaker_names(guild, speaker_ids, names):
@@ -44,7 +47,6 @@ async def send_transcript(send, path, count):
 class Recording:
     voice: VoiceClient
     sink: RecordingSink
-    scratch: tempfile.TemporaryDirectory
     channel_id: int
     owner_id: int
     started_at: datetime
@@ -61,16 +63,37 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
     model = None
     inference_lock = asyncio.Lock()
 
-    def transcribe(recording):
+    pending = ROOT / "transcripts" / ".pending"
+    processing: set[Path] = set()
+
+    def transcribe(path, manifest):
         nonlocal model
-        if recording.sink.clips and model is None:
+        directory = pending / path.stem
+        clips = [
+            AudioClip(clip["speaker_id"], clip["start"], directory / clip["file"])
+            for clip in manifest["clips"]
+        ]
+        if clips and model is None:
             from faster_whisper import WhisperModel
 
             model = WhisperModel(model_name, device="cpu", compute_type="int8")
-        return save_transcript(
-            model, recording.sink.clips, recording.sink.speaker_names, language, recording.path,
-            started_at=recording.started_at,
+        count = save_transcript(
+            model, clips, {int(key): name for key, name in manifest["speaker_names"].items()},
+            language, path, started_at=datetime.fromisoformat(manifest["started_at"]),
         )
+        try:
+            shutil.rmtree(directory)
+        except OSError:
+            log.exception("Could not remove saved recording audio %s", directory)
+        return count
+
+    async def process(path, manifest):
+        processing.add(path)
+        try:
+            async with inference_lock:
+                return await asyncio.to_thread(transcribe, path, manifest)
+        finally:
+            processing.discard(path)
 
     async def finish(guild_id, recording):
         try:
@@ -84,8 +107,6 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
                 except Exception:
                     log.exception("Voice disconnect failed in guild %s", guild_id)
 
-            if not recording.sink.clips:
-                return transcribe(recording)
             guild = bot.get_guild(guild_id)
             if guild is not None:
                 await resolve_speaker_names(
@@ -93,11 +114,42 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
                     {clip.speaker_id for clip in recording.sink.clips},
                     recording.sink.speaker_names,
                 )
-            async with inference_lock:
-                return await asyncio.to_thread(transcribe, recording)
+            manifest = {
+                "guild_id": guild_id,
+                "owner_id": recording.owner_id,
+                "started_at": recording.started_at.isoformat(),
+                "speaker_names": recording.sink.speaker_names,
+                "clips": [
+                    {"speaker_id": clip.speaker_id, "start": clip.start, "file": clip.path.name}
+                    for clip in recording.sink.clips
+                ],
+            }
+            staging = recording.sink.directory / "recording.tmp"
+            staging.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            staging.replace(staging.with_suffix(".json"))
+            return await process(recording.path, manifest)
         finally:
-            recording.scratch.cleanup()
             sessions.pop(guild_id, None)
+
+    async def report_failure(send, path):
+        log.exception("文字起こしに失敗しました: %s", path.stem)
+        message = yachiyo_line("transcription_failed")
+        if (pending / path.stem / "recording.json").is_file():
+            message += f" 音声は保存してあるよ。再試行は `/recap_retry recording_id:{path.stem}` でできるよ〜。"
+        try:
+            await send(message)
+        except discord.HTTPException:
+            log.warning("Discord could not report failure for %s", path.stem, exc_info=True)
+
+    async def deliver(ctx, path, count):
+        log.info("Saved %s (%s segments)", path, count)
+        try:
+            await send_transcript(ctx.followup.send, path, count)
+        except discord.HTTPException:
+            try:
+                await send_transcript(ctx.channel.send, path, count)
+            except discord.HTTPException:
+                log.warning("Discord could not deliver transcript %s", path, exc_info=True)
 
     @bot.event
     async def on_ready():
@@ -116,11 +168,10 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
             return
 
         connecting.add(guild_id)
-        scratch = None
+        directory = None
         voice = None
         try:
             await ctx.defer()
-            scratch = tempfile.TemporaryDirectory(prefix="recapcord-")
             voice = await channel.connect(timeout=20)
             display_name = discord.utils.escape_markdown(ctx.author.display_name)
             await channel.send(
@@ -130,10 +181,12 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
             started_at = datetime.now().astimezone()
             stamp = started_at.strftime("%Y-%m-%d_%H%M%S")
             path = ROOT / "transcripts" / f"{stamp}_{guild_id}_{uuid4().hex[:8]}.md"
-            sink = RecordingSink(Path(scratch.name))
+            (pending / path.stem).mkdir(mode=0o700, parents=True)
+            directory = pending / path.stem
+            sink = RecordingSink(directory)
             voice.start_recording(sink)
             sessions[guild_id] = Recording(
-                voice, sink, scratch, channel.id, ctx.author.id, started_at, path
+                voice, sink, channel.id, ctx.author.id, started_at, path
             )
         except Exception:
             log.exception("Could not start recording in guild %s", guild_id)
@@ -143,8 +196,8 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
             except Exception:
                 log.exception("Voice disconnect failed in guild %s", guild_id)
             finally:
-                if scratch is not None:
-                    scratch.cleanup()
+                if directory is not None:
+                    shutil.rmtree(directory, ignore_errors=True)
             await ctx.respond(yachiyo_line("recording_start_failed"))
         else:
             try:
@@ -174,21 +227,51 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
             try:
                 count = await finish(guild_id, recording)
             except Exception:
-                log.exception("文字起こしに失敗しました")
-                try:
-                    await ctx.followup.send(yachiyo_line("transcription_failed"))
-                except discord.HTTPException:
-                    pass
+                await report_failure(ctx.channel.send, recording.path)
             else:
-                log.info("Saved %s (%s segments)", recording.path, count)
-                try:
-                    await send_transcript(ctx.followup.send, recording.path, count)
-                except discord.HTTPException:
-                    # Long transcriptions can outlive the interaction token.
-                    try:
-                        await send_transcript(ctx.channel.send, recording.path, count)
-                    except discord.HTTPException:
-                        log.warning("Discord could not deliver transcript %s", recording.path, exc_info=True)
+                await deliver(ctx, recording.path, count)
+
+    @bot.slash_command(description="保存済みの録音から文字起こしを再試行", contexts={discord.InteractionContextType.guild})
+    async def recap_retry(ctx: discord.ApplicationContext, recording_id: str):
+        missing = "このサーバーで再試行できる録音が見つからなかったよ〜。"
+        if not RECORDING_ID.fullmatch(recording_id):
+            await ctx.respond(missing, ephemeral=True)
+            return
+
+        path = pending.parent / f"{recording_id}.md"
+        try:
+            manifest = json.loads((pending / recording_id / "recording.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            await ctx.respond(missing, ephemeral=True)
+            return
+        except (OSError, ValueError):
+            log.exception("Could not read saved recording %s", recording_id)
+            await ctx.respond(yachiyo_line("transcription_failed"), ephemeral=True)
+            return
+
+        if manifest["guild_id"] != ctx.guild_id:
+            await ctx.respond(missing, ephemeral=True)
+            return
+        if ctx.author.id != manifest["owner_id"] and not ctx.author.guild_permissions.manage_channels:
+            await ctx.respond("再試行できるのは、録音を始めた人か「チャンネルの管理」権限を持ってる人だよ〜。", ephemeral=True)
+            return
+        if path.is_file():
+            await ctx.respond("その録音は文字起こし済みだよ〜。", ephemeral=True)
+            return
+        if path in processing:
+            await ctx.respond("その録音は今、文字起こし中だよ〜。", ephemeral=True)
+            return
+
+        processing.add(path)
+        try:
+            await ctx.respond("保存した音声から、もう一度文字起こしするよ〜。")
+            count = await process(path, manifest)
+        except Exception:
+            await report_failure(ctx.channel.send, path)
+        else:
+            await deliver(ctx, path, count)
+        finally:
+            processing.discard(path)
 
     @bot.event
     async def on_voice_state_update(member, before, after):
@@ -203,7 +286,7 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
             count = await finish(member.guild.id, recording)
             log.info("Saved %s (%s segments) after leaving the voice channel", recording.path, count)
         except Exception:
-            log.exception("文字起こしに失敗しました")
+            await report_failure(before.channel.send, recording.path)
         else:
             try:
                 await send_transcript(before.channel.send, recording.path, count)
