@@ -13,6 +13,6 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py audio.py ./
+COPY bot.py audio.py yachiyo_lines.py ./
 
 CMD ["python", "bot.py"]

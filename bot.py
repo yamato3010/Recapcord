@@ -12,6 +12,7 @@ from discord.voice import VoiceClient
 from dotenv import load_dotenv
 
 from audio import RecordingSink, save_transcript
+from yachiyo_lines import yachiyo_line
 
 
 log = logging.getLogger(__name__)
@@ -31,10 +32,7 @@ async def resolve_speaker_names(guild, speaker_ids, names):
 
 
 async def send_transcript(send, path, count):
-    message = (
-        f"めでたしや〜！文字起こしをバッチリPCに保存したよ〜（全部で{count}件！）。"
-        "これで大事なことも忘れずにすむね〜。"
-    )
+    message = yachiyo_line("transcript_saved", count=count)
     attachment = discord.File(path)
     try:
         await send(message, file=attachment)
@@ -111,13 +109,10 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
         state = getattr(ctx.author, "voice", None)
         channel = state.channel if state else None
         if not isinstance(channel, discord.VoiceChannel):
-            await ctx.respond("先にボイスチャンネルに入ってから、ヤッチョを呼んでね〜！")
+            await ctx.respond(yachiyo_line("join_voice"))
             return
         if guild_id in sessions or guild_id in connecting:
-            await ctx.respond(
-                "おっと、このサーバーでは録音の準備か、録音か、文字起こしの途中だよ〜。"
-                "そっちが終わってから呼んでね！",
-            )
+            await ctx.respond(yachiyo_line("recording_busy"))
             return
 
         connecting.add(guild_id)
@@ -129,9 +124,7 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
             voice = await channel.connect(timeout=20)
             display_name = discord.utils.escape_markdown(ctx.author.display_name)
             await channel.send(
-                f"うけたまかしこまつかまつり〜！{display_name}の録音を開始するよ〜！"
-                "音声はヤッチョがいるPCでしっかり文字起こししておくね。"
-                "終わるときは /recap_stop って呼んでね〜！",
+                yachiyo_line("recording_started", display_name=display_name),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             started_at = datetime.now().astimezone()
@@ -152,9 +145,7 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
             finally:
                 if scratch is not None:
                     scratch.cleanup()
-            await ctx.respond(
-                "ごみん、録音を始められなかったよ〜。ヤッチョの権限と起動ログを見てみてね。",
-            )
+            await ctx.respond(yachiyo_line("recording_start_failed"))
         else:
             try:
                 await ctx.delete()
@@ -170,29 +161,22 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
         guild_id = ctx.guild_id
         recording = sessions.get(guild_id)
         if recording is None or recording.stopping:
-            await ctx.respond("おっと、今は止められる録音がないみたいだよ〜。")
+            await ctx.respond(yachiyo_line("no_recording"))
             return
         if ctx.author.id != recording.owner_id and not ctx.author.guild_permissions.manage_channels:
-            await ctx.respond(
-                "録音を止められるのは、録音を始めた人か「チャンネルの管理」権限を持ってる人だよ〜。",
-            )
+            await ctx.respond(yachiyo_line("stop_forbidden"))
             return
 
         recording.stopping = True
         try:
-            await ctx.respond(
-                "は〜い、録音をストップしたよ〜！いと大儀〜。今一生懸命まとめてるから、"
-                "保存先は処理が終わり次第ここへのお返事と起動ログでお知らせするね〜。",
-            )
+            await ctx.respond(yachiyo_line("transcribing"))
         finally:
             try:
                 count = await finish(guild_id, recording)
             except Exception:
                 log.exception("文字起こしに失敗しました")
                 try:
-                    await ctx.followup.send(
-                        "ごめんねぇ〜。文字起こしがうまくいかなかったの。起動ログを見てみてね。",
-                    )
+                    await ctx.followup.send(yachiyo_line("transcription_failed"))
                 except discord.HTTPException:
                     pass
             else:
