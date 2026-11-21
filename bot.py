@@ -30,14 +30,14 @@ async def resolve_speaker_names(guild, speaker_ids, names):
             names[speaker_id] = member.display_name
 
 
-async def send_transcript(send, path, count, **options):
+async def send_transcript(send, path, count):
     message = (
         f"めでたしや〜！文字起こしをバッチリPCに保存したよ〜（全部で{count}件！）。"
         "これで大事なことも忘れずにすむね〜。"
     )
     attachment = discord.File(path)
     try:
-        await send(message, file=attachment, **options)
+        await send(message, file=attachment)
     finally:
         attachment.close()
 
@@ -111,13 +111,12 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
         state = getattr(ctx.author, "voice", None)
         channel = state.channel if state else None
         if not isinstance(channel, discord.VoiceChannel):
-            await ctx.respond("先にボイスチャンネルに入ってから、ヤッチョを呼んでね〜！", ephemeral=True)
+            await ctx.respond("先にボイスチャンネルに入ってから、ヤッチョを呼んでね〜！")
             return
         if guild_id in sessions or guild_id in connecting:
             await ctx.respond(
                 "おっと、このサーバーでは録音の準備か、録音か、文字起こしの途中だよ〜。"
                 "そっちが終わってから呼んでね！",
-                ephemeral=True,
             )
             return
 
@@ -125,7 +124,7 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
         scratch = None
         voice = None
         try:
-            await ctx.defer(ephemeral=True)
+            await ctx.defer()
             scratch = tempfile.TemporaryDirectory(prefix="recapcord-")
             voice = await channel.connect(timeout=20)
             display_name = discord.utils.escape_markdown(ctx.author.display_name)
@@ -155,10 +154,14 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
                     scratch.cleanup()
             await ctx.respond(
                 "ごみん、録音を始められなかったよ〜。ヤッチョの権限と起動ログを見てみてね。",
-                ephemeral=True,
             )
         else:
-            await ctx.respond("りょ〜！録音してるよ。終わるときは `/recap_stop` で呼んでね〜！", ephemeral=True)
+            try:
+                await ctx.delete()
+            except discord.NotFound:
+                pass
+            except discord.HTTPException:
+                log.warning("Could not clear the deferred start reply in guild %s", guild_id)
         finally:
             connecting.discard(guild_id)
 
@@ -167,12 +170,11 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
         guild_id = ctx.guild_id
         recording = sessions.get(guild_id)
         if recording is None or recording.stopping:
-            await ctx.respond("おっと、今は止められる録音がないみたいだよ〜。", ephemeral=True)
+            await ctx.respond("おっと、今は止められる録音がないみたいだよ〜。")
             return
         if ctx.author.id != recording.owner_id and not ctx.author.guild_permissions.manage_channels:
             await ctx.respond(
                 "録音を止められるのは、録音を始めた人か「チャンネルの管理」権限を持ってる人だよ〜。",
-                ephemeral=True,
             )
             return
 
@@ -181,7 +183,6 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
             await ctx.respond(
                 "は〜い、録音をストップしたよ〜！いと大儀〜。今一生懸命まとめてるから、"
                 "保存先は処理が終わり次第ここへのお返事と起動ログでお知らせするね〜。",
-                ephemeral=True,
             )
         finally:
             try:
@@ -191,18 +192,17 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
                 try:
                     await ctx.followup.send(
                         "ごめんねぇ〜。文字起こしがうまくいかなかったの。起動ログを見てみてね。",
-                        ephemeral=True,
                     )
                 except discord.HTTPException:
                     pass
             else:
                 log.info("Saved %s (%s segments)", recording.path, count)
                 try:
-                    await send_transcript(ctx.followup.send, recording.path, count, ephemeral=True)
+                    await send_transcript(ctx.followup.send, recording.path, count)
                 except discord.HTTPException:
                     # Long transcriptions can outlive the interaction token.
                     try:
-                        await send_transcript(ctx.author.send, recording.path, count)
+                        await send_transcript(ctx.channel.send, recording.path, count)
                     except discord.HTTPException:
                         log.warning("Discord could not deliver transcript %s", recording.path, exc_info=True)
 
@@ -222,8 +222,7 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
             log.exception("文字起こしに失敗しました")
         else:
             try:
-                owner = bot.get_user(recording.owner_id) or await bot.fetch_user(recording.owner_id)
-                await send_transcript(owner.send, recording.path, count)
+                await send_transcript(before.channel.send, recording.path, count)
             except discord.HTTPException:
                 log.warning("Discord could not deliver transcript %s", recording.path, exc_info=True)
 
