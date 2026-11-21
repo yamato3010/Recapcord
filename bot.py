@@ -111,10 +111,14 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
         state = getattr(ctx.author, "voice", None)
         channel = state.channel if state else None
         if not isinstance(channel, discord.VoiceChannel):
-            await ctx.respond("先にボイスチャンネルに参加してください。", ephemeral=True)
+            await ctx.respond("先にボイスチャンネルに入ってから、ヤッチョを呼んでね〜！", ephemeral=True)
             return
         if guild_id in sessions or guild_id in connecting:
-            await ctx.respond("このサーバーでは録音の準備、録音、または文字起こしが進行中です。", ephemeral=True)
+            await ctx.respond(
+                "おっと、このサーバーでは録音の準備か、録音か、文字起こしの途中だよ〜。"
+                "そっちが終わってから呼んでね！",
+                ephemeral=True,
+            )
             return
 
         connecting.add(guild_id)
@@ -150,11 +154,11 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
                 if scratch is not None:
                     scratch.cleanup()
             await ctx.respond(
-                "録音を開始できませんでした。Botの権限と起動ログを確認してください。",
+                "ごみん、録音を始められなかったよ〜。ヤッチョの権限と起動ログを見てみてね。",
                 ephemeral=True,
             )
         else:
-            await ctx.respond("録音中です。終了するときは `/recap_stop` を実行してください。", ephemeral=True)
+            await ctx.respond("りょ〜！録音してるよ。終わるときは `/recap_stop` で呼んでね〜！", ephemeral=True)
         finally:
             connecting.discard(guild_id)
 
@@ -163,10 +167,13 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
         guild_id = ctx.guild_id
         recording = sessions.get(guild_id)
         if recording is None or recording.stopping:
-            await ctx.respond("停止できる録音はありません。", ephemeral=True)
+            await ctx.respond("おっと、今は止められる録音がないみたいだよ〜。", ephemeral=True)
             return
         if ctx.author.id != recording.owner_id and not ctx.author.guild_permissions.manage_channels:
-            await ctx.respond("録音を開始した人か「チャンネルの管理」権限を持つ人が停止できます。", ephemeral=True)
+            await ctx.respond(
+                "録音を止められるのは、録音を始めた人か「チャンネルの管理」権限を持ってる人だよ〜。",
+                ephemeral=True,
+            )
             return
 
         recording.stopping = True
@@ -183,7 +190,7 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
                 log.exception("文字起こしに失敗しました")
                 try:
                     await ctx.followup.send(
-                        "文字起こしに失敗しました。Botの起動ログを確認してください。",
+                        "ごめんねぇ〜。文字起こしがうまくいかなかったの。起動ログを見てみてね。",
                         ephemeral=True,
                     )
                 except discord.HTTPException:
