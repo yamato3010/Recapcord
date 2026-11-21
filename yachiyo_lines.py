@@ -1,6 +1,28 @@
 from random import choice
 
 
+STANDARD_LINES = {
+    "join_voice": "先にボイスチャンネルに参加してください。",
+    "recording_busy": "このサーバーでは録音の準備、録音、または文字起こしが進行中です。",
+    "recording_started": (
+        "{display_name} が録音を開始しました。音声はBotを実行しているPCで文字起こしします。"
+        "録音を終了するには `/recap_stop` を実行してください。"
+    ),
+    "recording_start_failed": "録音を開始できませんでした。Botの権限と起動ログを確認してください。",
+    "no_recording": "停止できる録音はありません。",
+    "stop_forbidden": "録音を開始した人か「チャンネルの管理」権限を持つ人が停止できます。",
+    "transcribing": "録音を停止しました。文字起こしが完了すると、結果をここに投稿し、保存先を起動ログに記録します。",
+    "transcription_failed": "文字起こしに失敗しました。Botの起動ログを確認してください。",
+    "transcript_saved": "文字起こしを{count}件保存しました。結果は添付ファイルで確認できます。",
+    "retry_hint": "録音は保存済みです。`/recap_retry recording_id:{recording_id}` で再試行できます。",
+    "retry_missing": "このサーバーで再試行できる録音が見つかりませんでした。",
+    "retry_forbidden": "録音を開始した人か「チャンネルの管理」権限を持つ人が再試行できます。",
+    "retry_already_saved": "その録音はすでに文字起こし済みです。",
+    "retry_busy": "その録音は現在、文字起こし中です。",
+    "retry_started": "保存済みの音声から文字起こしを再試行します。",
+}
+
+
 LINES = {
     "join_voice": (
         "先にボイスチャンネルに入ってから、ヤッチョを呼んでね〜！",
@@ -100,8 +122,18 @@ LINES = {
         "めでたしめでたし〜！文字起こしは{count}件。ヤッチョのPCに保存したよ。ファイルもくっつけておくね〜。",
         "終わったよ〜！文字起こしは全部で{count}件、ヤッチョのPCに保存したの。えへへ、読み返すときはここからどうぞ。",
     ),
+    "retry_hint": ("音声は保存してあるよ。再試行は `/recap_retry recording_id:{recording_id}` でできるよ〜。",),
+    "retry_missing": ("このサーバーで再試行できる録音が見つからなかったよ〜。",),
+    "retry_forbidden": ("再試行できるのは、録音を始めた人か「チャンネルの管理」権限を持ってる人だよ〜。",),
+    "retry_already_saved": ("その録音は文字起こし済みだよ〜。",),
+    "retry_busy": ("その録音は今、文字起こし中だよ〜。",),
+    "retry_started": ("保存した音声から、もう一度文字起こしするよ〜。",),
 }
 
 
 def yachiyo_line(scene: str, **values: str | int) -> str:
     return choice(LINES[scene]).format(**values)
+
+
+def standard_line(scene: str, **values: str | int) -> str:
+    return STANDARD_LINES[scene].format(**values)

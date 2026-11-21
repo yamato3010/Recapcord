@@ -14,7 +14,7 @@ from discord.voice import VoiceClient
 from dotenv import load_dotenv
 
 from audio import AudioClip, RecordingSink, save_transcript
-from yachiyo_lines import yachiyo_line
+from yachiyo_lines import standard_line, yachiyo_line
 
 
 log = logging.getLogger(__name__)
@@ -34,15 +34,6 @@ async def resolve_speaker_names(guild, speaker_ids, names):
             names[speaker_id] = member.display_name
 
 
-async def send_transcript(send, path, count):
-    message = yachiyo_line("transcript_saved", count=count)
-    attachment = discord.File(path)
-    try:
-        await send(message, file=attachment)
-    finally:
-        attachment.close()
-
-
 @dataclass
 class Recording:
     voice: VoiceClient
@@ -54,7 +45,10 @@ class Recording:
     stopping: bool = False
 
 
-def create_bot(guild_id: int | None, model_name: str, language: str | None):
+def create_bot(
+    guild_id: int | None, model_name: str, language: str | None, *, yachiyo_mode: bool = False
+):
+    line = yachiyo_line if yachiyo_mode else standard_line
     intents = discord.Intents.default()
     options = {"debug_guilds": [guild_id]} if guild_id else {}
     bot = discord.Bot(intents=intents, **options)
@@ -133,13 +127,21 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
 
     async def report_failure(send, path):
         log.exception("文字起こしに失敗しました: %s", path.stem)
-        message = yachiyo_line("transcription_failed")
+        message = line("transcription_failed")
         if (pending / path.stem / "recording.json").is_file():
-            message += f" 音声は保存してあるよ。再試行は `/recap_retry recording_id:{path.stem}` でできるよ〜。"
+            message += " " + line("retry_hint", recording_id=path.stem)
         try:
             await send(message)
         except discord.HTTPException:
             log.warning("Discord could not report failure for %s", path.stem, exc_info=True)
+
+    async def send_transcript(send, path, count):
+        message = line("transcript_saved", count=count)
+        attachment = discord.File(path)
+        try:
+            await send(message, file=attachment)
+        finally:
+            attachment.close()
 
     async def deliver(ctx, path, count):
         log.info("Saved %s (%s segments)", path, count)
@@ -161,10 +163,10 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
         state = getattr(ctx.author, "voice", None)
         channel = state.channel if state else None
         if not isinstance(channel, discord.VoiceChannel):
-            await ctx.respond(yachiyo_line("join_voice"))
+            await ctx.respond(line("join_voice"))
             return
         if guild_id in sessions or guild_id in connecting:
-            await ctx.respond(yachiyo_line("recording_busy"))
+            await ctx.respond(line("recording_busy"))
             return
 
         connecting.add(guild_id)
@@ -175,7 +177,7 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
             voice = await channel.connect(timeout=20)
             display_name = discord.utils.escape_markdown(ctx.author.display_name)
             await channel.send(
-                yachiyo_line("recording_started", display_name=display_name),
+                line("recording_started", display_name=display_name),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             started_at = datetime.now().astimezone()
@@ -198,7 +200,7 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
             finally:
                 if directory is not None:
                     shutil.rmtree(directory, ignore_errors=True)
-            await ctx.respond(yachiyo_line("recording_start_failed"))
+            await ctx.respond(line("recording_start_failed"))
         else:
             try:
                 await ctx.delete()
@@ -214,15 +216,15 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
         guild_id = ctx.guild_id
         recording = sessions.get(guild_id)
         if recording is None or recording.stopping:
-            await ctx.respond(yachiyo_line("no_recording"))
+            await ctx.respond(line("no_recording"))
             return
         if ctx.author.id != recording.owner_id and not ctx.author.guild_permissions.manage_channels:
-            await ctx.respond(yachiyo_line("stop_forbidden"))
+            await ctx.respond(line("stop_forbidden"))
             return
 
         recording.stopping = True
         try:
-            await ctx.respond(yachiyo_line("transcribing"))
+            await ctx.respond(line("transcribing"))
         finally:
             try:
                 count = await finish(guild_id, recording)
@@ -233,7 +235,7 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
 
     @bot.slash_command(description="保存済みの録音から文字起こしを再試行", contexts={discord.InteractionContextType.guild})
     async def recap_retry(ctx: discord.ApplicationContext, recording_id: str):
-        missing = "このサーバーで再試行できる録音が見つからなかったよ〜。"
+        missing = line("retry_missing")
         if not RECORDING_ID.fullmatch(recording_id):
             await ctx.respond(missing, ephemeral=True)
             return
@@ -246,25 +248,25 @@ def create_bot(guild_id: int | None, model_name: str, language: str | None):
             return
         except (OSError, ValueError):
             log.exception("Could not read saved recording %s", recording_id)
-            await ctx.respond(yachiyo_line("transcription_failed"), ephemeral=True)
+            await ctx.respond(line("transcription_failed"), ephemeral=True)
             return
 
         if manifest["guild_id"] != ctx.guild_id:
             await ctx.respond(missing, ephemeral=True)
             return
         if ctx.author.id != manifest["owner_id"] and not ctx.author.guild_permissions.manage_channels:
-            await ctx.respond("再試行できるのは、録音を始めた人か「チャンネルの管理」権限を持ってる人だよ〜。", ephemeral=True)
+            await ctx.respond(line("retry_forbidden"), ephemeral=True)
             return
         if path.is_file():
-            await ctx.respond("その録音は文字起こし済みだよ〜。", ephemeral=True)
+            await ctx.respond(line("retry_already_saved"), ephemeral=True)
             return
         if path in processing:
-            await ctx.respond("その録音は今、文字起こし中だよ〜。", ephemeral=True)
+            await ctx.respond(line("retry_busy"), ephemeral=True)
             return
 
         processing.add(path)
         try:
-            await ctx.respond("保存した音声から、もう一度文字起こしするよ〜。")
+            await ctx.respond(line("retry_started"))
             count = await process(path, manifest)
         except Exception:
             await report_failure(ctx.channel.send, path)
@@ -318,6 +320,7 @@ def main():
         int(guild) if guild else None,
         os.getenv("WHISPER_MODEL", "small"),
         os.getenv("WHISPER_LANGUAGE", "ja") or None,
+        yachiyo_mode=os.getenv("YACHIYO_MODE", "").strip().lower() in {"1", "true", "on"},
     )
     bot.run(token)
 

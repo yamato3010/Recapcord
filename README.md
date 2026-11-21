@@ -19,6 +19,8 @@ mkdir -p transcripts
 
 `.env` の `DISCORD_TOKEN` にBotトークンを設定します。`DISCORD_GUILD_ID` にテスト用サーバーのIDを設定すると、そのサーバーにコマンドが登録されます。
 
+ヤッチョ風のセリフを使うには、`.env` に `YACHIYO_MODE=true` を設定します。未設定または `false` の場合は通常の案内文になります。設定変更後は `docker compose up -d` で反映します。
+
 ```sh
 docker compose up -d --build
 docker compose logs -f bot
