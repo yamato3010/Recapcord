@@ -1,0 +1,13 @@
+services:
+  bot:
+    build: .
+    init: true
+    env_file: .env
+    environment:
+      OPUS_LIBRARY: ""
+    volumes:
+      - ./transcripts:/app/transcripts
+      - whisper-models:/var/cache/huggingface
+
+volumes:
+  whisper-models:
