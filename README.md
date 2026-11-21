@@ -6,7 +6,7 @@ Discordのボイスチャンネルで話した内容を、Botを動かすPC上�
 
 1. [Discord Developer Portal](https://discord.com/developers/applications) でアプリを作成し、**Bot** でトークンを取得します。
 2. **Installation** の **Guild Install** で `bot` と `applications.commands` を選び、サーバーにBotを追加します。
-3. 対象のボイスチャンネルでBotに **チャンネルを見る**、**接続**、**メッセージを送信** の権限を付けます。録音開始のお知らせはボイスチャンネル付属のテキストチャットに投稿されます。
+3. 対象のボイスチャンネルでBotに **チャンネルを見る**、**接続** の権限を付けます。コマンドを実行するチャンネルとボイスチャンネル付属のチャットでは **メッセージを送信**、**ファイルを添付** の権限を付けます。
 
 ## Docker Composeで起動
 
@@ -19,7 +19,6 @@ mkdir -p transcripts
 
 `.env` の `DISCORD_TOKEN` にBotトークンを設定します。`DISCORD_GUILD_ID` にテスト用サーバーのIDを設定すると、そのサーバーにコマンドが登録されます。
 
-ヤッチョ風のセリフを使うには、`.env` に `YACHIYO_MODE=true` を設定します。未設定または `false` の場合は通常の案内文になります。設定変更後は `docker compose up -d` で反映します。
 
 ```sh
 docker compose up -d --build
@@ -35,7 +34,7 @@ docker compose logs -f bot
 1. ボイスチャンネルに入り、参加者に録音することを伝えます。
 2. Discordで `/recap_start` を実行します。Botが参加し、ボイスチャンネルのチャットに録音開始を投稿します。
 3. `/recap_stop` を実行します。録音を開始した人と「チャンネルの管理」権限を持つ人が停止できます。Botが切断された場合も、その時点までの音声を文字起こしします。
-4. 処理完了後、`/recap_stop` を実行した人への返信にMarkdownファイルが添付されます。返信に失敗した場合はその人へのDMを試みます。Botが切断された場合は録音を開始した人にDMします。ファイルはホストの `transcripts/` にも保存されます。
+4. コマンドへの返信は、実行したチャンネルを閲覧できる全員に表示されます。処理完了後、`/recap_stop` を実行したチャンネルにMarkdownファイルが添付されます。Botが切断された場合は録音していたボイスチャンネルのチャットに添付します。ファイルはホストの `transcripts/` にも保存されます。
 
 ```markdown
 # トランスクリプト
